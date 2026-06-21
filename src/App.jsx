@@ -201,7 +201,7 @@ function App() {
 
     // ── Render ─────────────────────────────────────────────────────────────
     return (
-        <div className="min-h-screen bg-gradient-to-br from-brand-sky via-brand-blue to-brand-purple p-4 pb-10">
+        <div className="min-h-screen p-4 pb-10" style={{ background: 'linear-gradient(to bottom, #7dd3fc 0%, #3b82f6 45%, #4f46e5 100%)' }}>
             <div className="max-w-lg mx-auto">
 
                 {/* ── Header ── */}
