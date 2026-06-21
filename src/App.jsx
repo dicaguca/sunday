@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import {
     Plus, Trash2, Pencil, Check, Sparkles,
-    Settings, RefreshCw, X,
+    Settings, RefreshCw, X, Clock,
 } from 'lucide-react';
 import { Modal } from './components/ui';
 
@@ -62,6 +62,7 @@ function App() {
 
     // ── UI state ───────────────────────────────────────────────────────────
     const [showActivities,  setShowActivities]  = useState(false);
+    const [showHistory,     setShowHistory]     = useState(false);
     const [showAddModal,    setShowAddModal]     = useState(false);
     const [newName,         setNewName]          = useState('');
     const [deleteTarget,    setDeleteTarget]     = useState(null);
@@ -208,13 +209,22 @@ function App() {
                     <h1 className="text-2xl font-semibold tracking-wider uppercase text-white">
                         Sunday
                     </h1>
-                    <button
-                        onClick={() => setShowActivities(true)}
-                        className="mt-2 inline-flex items-center gap-1.5 text-white opacity-40 hover:opacity-75 transition-opacity"
-                    >
-                        <Settings size={14} />
-                        <span className="text-xs">manage activities</span>
-                    </button>
+                    <div className="mt-2 flex items-center justify-center gap-4">
+                        <button
+                            onClick={() => setShowHistory(true)}
+                            className="inline-flex items-center gap-1.5 text-white opacity-40 hover:opacity-75 transition-opacity"
+                        >
+                            <Clock size={14} />
+                            <span className="text-xs">history</span>
+                        </button>
+                        <button
+                            onClick={() => setShowActivities(true)}
+                            className="inline-flex items-center gap-1.5 text-white opacity-40 hover:opacity-75 transition-opacity"
+                        >
+                            <Settings size={14} />
+                            <span className="text-xs">activities</span>
+                        </button>
+                    </div>
                     {syncStatus && (
                         <div className="mt-1 text-xs text-white opacity-50">{syncStatus}</div>
                     )}
@@ -354,6 +364,99 @@ function App() {
                     </div>
                 )}
             </div>
+
+            {/* ══════════════════════════════════════════════
+                HISTORY PANEL (bottom sheet overlay)
+            ══════════════════════════════════════════════ */}
+            {showHistory && (
+                <div
+                    className="fixed inset-0 z-50 flex flex-col justify-end p-4"
+                    style={{ background: 'rgba(0,0,0,0.35)', backdropFilter: 'blur(4px)' }}
+                    onClick={() => setShowHistory(false)}
+                >
+                    <div
+                        className="glass slide-up rounded-3xl max-w-lg w-full mx-auto flex flex-col"
+                        style={{ maxHeight: '82vh' }}
+                        onClick={e => e.stopPropagation()}
+                    >
+                        {/* Header */}
+                        <div className="flex items-center justify-between px-5 pt-5 pb-3 shrink-0">
+                            <h2 className="font-semibold text-stone-700 text-lg">History</h2>
+                            <button
+                                onClick={() => setShowHistory(false)}
+                                className="p-2 hover:bg-stone-100 rounded-xl text-stone-400 transition-colors"
+                            >
+                                <X size={18} />
+                            </button>
+                        </div>
+
+                        {/* Body */}
+                        <div className="overflow-y-auto px-5 pb-6">
+                            {sessions.length === 0 ? (
+                                <div className="text-center py-10 text-stone-400">
+                                    <Clock size={32} className="mx-auto mb-3 text-stone-300" />
+                                    <p className="font-medium">No history yet</p>
+                                    <p className="text-sm mt-1">Past weeks will appear here</p>
+                                </div>
+                            ) : (
+                                <div className="space-y-4">
+                                    {[...sessions]
+                                        .sort((a, b) => b.week.localeCompare(a.week))
+                                        .map(session => {
+                                            const isCurrentWeek = session.week === weekKey;
+                                            const allDone = session.pickedIds.length > 0 &&
+                                                session.pickedIds.every(id => session.completedIds.includes(id));
+                                            return (
+                                                <div key={session.week}>
+                                                    {/* Week header */}
+                                                    <div className="flex items-center justify-between mb-2">
+                                                        <span className="text-xs font-semibold text-stone-400 uppercase tracking-widest">
+                                                            {weekRangeLabel(session.week)}
+                                                        </span>
+                                                        {isCurrentWeek && (
+                                                            <span className="text-xs text-brand-blue font-medium">This week</span>
+                                                        )}
+                                                        {!isCurrentWeek && allDone && (
+                                                            <span className="text-xs text-brand-sky">✓ All done</span>
+                                                        )}
+                                                    </div>
+                                                    {/* Task list */}
+                                                    <div className="space-y-1.5">
+                                                        {session.pickedIds.map(id => {
+                                                            const activity = activities.find(a => a.id === id);
+                                                            const done = session.completedIds.includes(id);
+                                                            return (
+                                                                <div
+                                                                    key={id}
+                                                                    className="flex items-center gap-3 bg-stone-50 rounded-xl px-4 py-2.5"
+                                                                >
+                                                                    <div
+                                                                        className="w-5 h-5 rounded-full flex items-center justify-center shrink-0"
+                                                                        style={done
+                                                                            ? { background: 'linear-gradient(135deg,#38bdf8,#60a5fa)' }
+                                                                            : { border: '2px solid #e7e5e4' }
+                                                                        }
+                                                                    >
+                                                                        {done && <Check size={11} strokeWidth={3} color="white" />}
+                                                                    </div>
+                                                                    <span className={`text-sm font-medium ${
+                                                                        done ? 'text-stone-400 line-through' : 'text-stone-600'
+                                                                    }`}>
+                                                                        {activity?.name ?? '(removed)'}
+                                                                    </span>
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* ══════════════════════════════════════════════
                 ACTIVITIES PANEL (bottom sheet overlay)
