@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import {
-    Plus, Trash2, Check, Sparkles,
+    Plus, Trash2, Pencil, Check, Sparkles,
     CalendarDays, Settings, RefreshCw,
 } from 'lucide-react';
 import { Modal } from './components/ui';
@@ -70,6 +70,8 @@ function App() {
     const [showAddModal,     setShowAddModal]      = useState(false);
     const [newName,          setNewName]           = useState('');
     const [deleteTarget,     setDeleteTarget]      = useState(null);
+    const [editTarget,       setEditTarget]        = useState(null);
+    const [editName,         setEditName]          = useState('');
     const [showRepickModal,  setShowRepickModal]   = useState(false);
 
     // ── Cloud sync ─────────────────────────────────────────────────────────
@@ -204,6 +206,19 @@ function App() {
         setActivities(prev => prev.filter(a => a.id !== id));
         setQueue(prev => prev.filter(q => q !== id));
         setDeleteTarget(null);
+    };
+
+    const openEdit = (activity) => {
+        setEditTarget(activity);
+        setEditName(activity.name);
+    };
+
+    const saveEdit = () => {
+        if (!editName.trim()) return;
+        setActivities(prev => prev.map(a =>
+            a.id === editTarget.id ? { ...a, name: editName.trim() } : a
+        ));
+        setEditTarget(null);
     };
 
     // How many weeks until everything's been covered once
@@ -443,12 +458,20 @@ function App() {
                                                     </div>
                                                     <span className="text-stone-700 font-medium truncate">{activity.name}</span>
                                                 </div>
-                                                <button
-                                                    onClick={() => setDeleteTarget(activity)}
-                                                    className="p-2 hover:bg-red-100 rounded-lg text-stone-300 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100 ml-2 shrink-0"
-                                                >
-                                                    <Trash2 size={14} />
-                                                </button>
+                                                <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity ml-2 shrink-0">
+                                                    <button
+                                                        onClick={() => openEdit(activity)}
+                                                        className="p-2 hover:bg-stone-200 rounded-lg text-stone-300 hover:text-stone-500 transition-colors"
+                                                    >
+                                                        <Pencil size={14} />
+                                                    </button>
+                                                    <button
+                                                        onClick={() => setDeleteTarget(activity)}
+                                                        className="p-2 hover:bg-red-100 rounded-lg text-stone-300 hover:text-red-400 transition-colors"
+                                                    >
+                                                        <Trash2 size={14} />
+                                                    </button>
+                                                </div>
                                             </div>
                                         );
                                     })}
@@ -512,6 +535,32 @@ function App() {
                             Remove
                         </button>
                     </div>
+                </div>
+            </Modal>
+
+            {/* ── Edit Activity Modal ── */}
+            <Modal
+                isOpen={!!editTarget}
+                onClose={() => setEditTarget(null)}
+                title="Edit Task"
+                maxWidth="max-w-sm"
+            >
+                <div className="space-y-4">
+                    <input
+                        type="text"
+                        value={editName}
+                        onChange={e => setEditName(e.target.value)}
+                        onKeyDown={e => e.key === 'Enter' && saveEdit()}
+                        autoFocus
+                        className="w-full border-2 border-stone-200 rounded-xl py-2.5 px-3 focus:outline-none focus:border-brand-blue font-medium text-stone-700 placeholder:text-stone-300 transition-colors"
+                    />
+                    <button
+                        onClick={saveEdit}
+                        disabled={!editName.trim()}
+                        className="w-full bg-gradient-to-r from-brand-sky to-brand-blue text-white font-semibold py-3 rounded-xl disabled:opacity-40 hover:shadow-md transition-all"
+                    >
+                        Save
+                    </button>
                 </div>
             </Modal>
 

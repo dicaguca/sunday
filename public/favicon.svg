@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- big bubble -->
+  <circle cx="20" cy="20" r="10" fill="#38bdf8"/>
+  <!-- medium bubble -->
+  <circle cx="9" cy="13" r="6.5" fill="#60a5fa"/>
+  <!-- small bubble -->
+  <circle cx="20" cy="6" r="4.5" fill="#818cf8"/>
+  <!-- highlights -->
+  <circle cx="17" cy="16.5" r="2.8" fill="white" opacity="0.32"/>
+  <circle cx="7.5" cy="11" r="1.7" fill="white" opacity="0.32"/>
+  <circle cx="18.5" cy="4.5" r="1.2" fill="white" opacity="0.32"/>
+</svg>
