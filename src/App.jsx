@@ -9,6 +9,15 @@ import { Modal } from './components/ui';
 
 const CLOUD_SYNC_URL = 'https://api.sadhanas.app/sunday';
 
+const REPEAT_OPTIONS = [
+    { label: 'Normal', value: null },
+    { label: 'Every 2w', value: 2 },
+    { label: 'Every 3w', value: 3 },
+    { label: 'Every 4w', value: 4 },
+    { label: 'Every 6w', value: 6 },
+    { label: 'Every 8w', value: 8 },
+];
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const shuffle = (arr) => {
@@ -40,6 +49,43 @@ const weekRangeLabel = (weekKey) => {
     return `${fmt(mon)} – ${fmt(sun)}`;
 };
 
+// Convert 'YYYY-WNN' to an ordinal number so we can subtract week keys
+const weekKeyToNum = (wk) => {
+    const [y, w] = wk.split('-W');
+    return parseInt(y) * 52 + parseInt(w);
+};
+
+// ─── Repeat picker sub-component ─────────────────────────────────────────────
+
+const RepeatPicker = ({ value, onChange }) => (
+    <div>
+        <label className="text-xs font-semibold text-stone-400 uppercase tracking-wider mb-2 block">
+            Repeat frequency
+        </label>
+        <div className="flex flex-wrap gap-1.5">
+            {REPEAT_OPTIONS.map(opt => (
+                <button
+                    key={String(opt.value)}
+                    type="button"
+                    onClick={() => onChange(opt.value)}
+                    className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
+                        value === opt.value
+                            ? 'bg-gradient-to-r from-brand-sky to-brand-blue text-white shadow-sm'
+                            : 'bg-stone-100 text-stone-500 hover:bg-stone-200'
+                    }`}
+                >
+                    {opt.label}
+                </button>
+            ))}
+        </div>
+        {value && (
+            <p className="text-xs text-stone-400 mt-1.5">
+                This task will only be picked every {value} weeks, regardless of rotation order.
+            </p>
+        )}
+    </div>
+);
+
 // ─── App ──────────────────────────────────────────────────────────────────────
 
 function App() {
@@ -65,9 +111,11 @@ function App() {
     const [showHistory,     setShowHistory]     = useState(false);
     const [showAddModal,    setShowAddModal]     = useState(false);
     const [newName,         setNewName]          = useState('');
+    const [newRepeatEvery,  setNewRepeatEvery]   = useState(null);
     const [deleteTarget,    setDeleteTarget]     = useState(null);
     const [editTarget,      setEditTarget]       = useState(null);
     const [editName,        setEditName]         = useState('');
+    const [editRepeatEvery, setEditRepeatEvery]  = useState(null);
     const [showRepickModal, setShowRepickModal]  = useState(false);
 
     // ── Cloud sync ─────────────────────────────────────────────────────────
@@ -130,18 +178,51 @@ function App() {
     useEffect(() => localStorage.setItem('sunday-queue',      JSON.stringify(queue)),      [queue]);
     useEffect(() => localStorage.setItem('sunday-sessions',   JSON.stringify(sessions)),   [sessions]);
 
+    // ── Due-date check ─────────────────────────────────────────────────────
+    // Returns true if an activity should be included in this week's pool.
+    // Activities without repeatEvery are always due (regular rotation).
+    // Activities with repeatEvery: N are due when at least N weeks have passed
+    // since the last week they were completed.
+    const isDue = (activity) => {
+        if (!activity.repeatEvery) return true;
+        const lastDoneSession = [...sessions]
+            .filter(s => s.completedIds?.includes(activity.id))
+            .sort((a, b) => b.week.localeCompare(a.week))[0];
+        if (!lastDoneSession) return true; // never done → always eligible
+        const weeksAgo = weekKeyToNum(weekKey) - weekKeyToNum(lastDoneSession.week);
+        return weeksAgo >= activity.repeatEvery;
+    };
+
     // ── Rotation logic ─────────────────────────────────────────────────────
     const drawFromQueue = (currentQueue, count) => {
-        const validIds = new Set(activities.map(a => a.id));
-        let q = currentQueue.filter(id => validIds.has(id));
+        // Build the eligible pool: only activities that are due this week
+        const eligible = activities.filter(isDue);
+        if (eligible.length === 0) return { picked: [], nextQueue: currentQueue };
+
+        const eligibleIds = new Set(eligible.map(a => a.id));
+
+        // Take the existing queue, filter to eligible only, then append any
+        // eligible activities that weren't in the queue yet (shuffled).
+        let q = currentQueue.filter(id => eligibleIds.has(id));
         const inQ     = new Set(q);
-        const newOnes = shuffle(activities.filter(a => !inQ.has(a.id)).map(a => a.id));
-        q = [...q, ...newOnes];
-        const n = Math.min(count, activities.length);
-        while (q.length < n) q = [...q, ...shuffle(activities.map(a => a.id))];
+        const missing = shuffle(eligible.filter(a => !inQ.has(a.id)).map(a => a.id));
+        q = [...q, ...missing];
+
+        const n     = Math.min(count, eligible.length);
         const picked    = q.slice(0, n);
         let   remaining = q.slice(n);
-        if (remaining.length === 0) remaining = shuffle(activities.map(a => a.id));
+
+        // If no regular (non-fixed) activities remain in queue, refill the deck
+        // so the rotation keeps going for next week.
+        const regularRemaining = remaining.filter(id => {
+            const a = activities.find(x => x.id === id);
+            return a && !a.repeatEvery;
+        });
+        if (regularRemaining.length === 0) {
+            const regularIds = activities.filter(a => !a.repeatEvery).map(a => a.id);
+            remaining = shuffle(regularIds);
+        }
+
         return { picked, nextQueue: remaining };
     };
 
@@ -171,10 +252,12 @@ function App() {
     // ── Activity management ────────────────────────────────────────────────
     const addActivity = () => {
         if (!newName.trim()) return;
-        const a = { id: crypto.randomUUID(), name: newName.trim() };
+        const a = { id: crypto.randomUUID(), name: newName.trim(), repeatEvery: newRepeatEvery ?? null };
         setActivities(prev => [...prev, a]);
-        setQueue(prev => [...prev, a.id]);
+        // Regular activities go into the rotation queue; fixed-interval ones are managed by isDue
+        if (!newRepeatEvery) setQueue(prev => [...prev, a.id]);
         setNewName('');
+        setNewRepeatEvery(null);
         setShowAddModal(false);
     };
 
@@ -187,17 +270,32 @@ function App() {
     const openEdit = (activity) => {
         setEditTarget(activity);
         setEditName(activity.name);
+        setEditRepeatEvery(activity.repeatEvery ?? null);
     };
 
     const saveEdit = () => {
         if (!editName.trim()) return;
         setActivities(prev => prev.map(a =>
-            a.id === editTarget.id ? { ...a, name: editName.trim() } : a
+            a.id === editTarget.id
+                ? { ...a, name: editName.trim(), repeatEvery: editRepeatEvery ?? null }
+                : a
         ));
+        // Keep queue in sync when repeat setting changes
+        const wasRegular  = !editTarget.repeatEvery;
+        const isNowRegular = !editRepeatEvery;
+        if (wasRegular && !isNowRegular) {
+            // regular → fixed: remove from rotation queue
+            setQueue(prev => prev.filter(id => id !== editTarget.id));
+        } else if (!wasRegular && isNowRegular) {
+            // fixed → regular: add back into rotation queue
+            setQueue(prev => prev.includes(editTarget.id) ? prev : [...prev, editTarget.id]);
+        }
         setEditTarget(null);
     };
 
-    const cycleWeeks = activities.length > 0 ? Math.ceil(activities.length / 3) : 0;
+    const regularCount = activities.filter(a => !a.repeatEvery).length;
+    const fixedCount   = activities.length - regularCount;
+    const cycleWeeks   = regularCount > 0 ? Math.ceil(regularCount / 3) : 0;
 
     // ── Render ─────────────────────────────────────────────────────────────
     return (
@@ -274,11 +372,13 @@ function App() {
                                 </button>
                             ))}
                         </div>
-                        {cycleWeeks > 0 && (
-                            <p className="text-center text-xs text-white opacity-40 pt-1">
-                                {activities.length} activities · full rotation every ~{cycleWeeks} week{cycleWeeks !== 1 ? 's' : ''}
-                            </p>
-                        )}
+                        <p className="text-center text-xs text-white opacity-40 pt-1">
+                            {regularCount > 0 && <>
+                                {regularCount} rotating · ~{cycleWeeks}w cycle
+                            </>}
+                            {regularCount > 0 && fixedCount > 0 && <> · </>}
+                            {fixedCount > 0 && <>{fixedCount} on fixed schedule</>}
+                        </p>
                     </div>
                 )}
 
@@ -338,11 +438,18 @@ function App() {
                                                 : <Sparkles size={18} />
                                             }
                                         </div>
-                                        <span className={`flex-1 font-medium text-base leading-snug ${
-                                            done ? 'line-through text-stone-300' : 'text-stone-700'
-                                        }`}>
-                                            {name}
-                                        </span>
+                                        <div className="flex-1 min-w-0">
+                                            <span className={`font-medium text-base leading-snug block ${
+                                                done ? 'line-through text-stone-300' : 'text-stone-700'
+                                            }`}>
+                                                {name}
+                                            </span>
+                                            {activity?.repeatEvery && (
+                                                <span className="text-xs text-brand-sky mt-0.5 block">
+                                                    every {activity.repeatEvery}w
+                                                </span>
+                                            )}
+                                        </div>
                                         {done && (
                                             <span className="text-xs text-brand-blue shrink-0">Done</span>
                                         )}
@@ -379,7 +486,6 @@ function App() {
                         style={{ maxHeight: '82vh' }}
                         onClick={e => e.stopPropagation()}
                     >
-                        {/* Header */}
                         <div className="flex items-center justify-between px-5 pt-5 pb-3 shrink-0">
                             <h2 className="font-semibold text-stone-700 text-lg">History</h2>
                             <button
@@ -390,7 +496,6 @@ function App() {
                             </button>
                         </div>
 
-                        {/* Body */}
                         <div className="overflow-y-auto px-5 pb-6">
                             {sessions.length === 0 ? (
                                 <div className="text-center py-10 text-stone-400">
@@ -408,7 +513,6 @@ function App() {
                                                 session.pickedIds.every(id => session.completedIds.includes(id));
                                             return (
                                                 <div key={session.week}>
-                                                    {/* Week header */}
                                                     <div className="flex items-center justify-between mb-2">
                                                         <span className="text-xs font-semibold text-stone-400 uppercase tracking-widest">
                                                             {weekRangeLabel(session.week)}
@@ -420,7 +524,6 @@ function App() {
                                                             <span className="text-xs text-brand-sky">✓ All done</span>
                                                         )}
                                                     </div>
-                                                    {/* Task list */}
                                                     <div className="space-y-1.5">
                                                         {session.pickedIds.map(id => {
                                                             const activity = activities.find(a => a.id === id);
@@ -439,11 +542,16 @@ function App() {
                                                                     >
                                                                         {done && <Check size={11} strokeWidth={3} color="white" />}
                                                                     </div>
-                                                                    <span className={`text-sm font-medium ${
+                                                                    <span className={`text-sm font-medium flex-1 ${
                                                                         done ? 'text-stone-400 line-through' : 'text-stone-600'
                                                                     }`}>
                                                                         {activity?.name ?? '(removed)'}
                                                                     </span>
+                                                                    {activity?.repeatEvery && (
+                                                                        <span className="text-xs text-stone-300">
+                                                                            {activity.repeatEvery}w
+                                                                        </span>
+                                                                    )}
                                                                 </div>
                                                             );
                                                         })}
@@ -472,19 +580,19 @@ function App() {
                         style={{ maxHeight: '82vh' }}
                         onClick={e => e.stopPropagation()}
                     >
-                        {/* Sheet header */}
                         <div className="flex items-center justify-between px-5 pt-5 pb-3 shrink-0">
                             <div>
                                 <h2 className="font-semibold text-stone-700 text-lg">Activities</h2>
                                 {activities.length > 0 && (
                                     <p className="text-xs text-stone-400 mt-0.5">
-                                        {activities.length} tasks · rotation every ~{cycleWeeks} week{cycleWeeks !== 1 ? 's' : ''}
+                                        {regularCount} rotating
+                                        {fixedCount > 0 && ` · ${fixedCount} fixed`}
                                     </p>
                                 )}
                             </div>
                             <div className="flex items-center gap-2">
                                 <button
-                                    onClick={() => { setNewName(''); setShowAddModal(true); }}
+                                    onClick={() => { setNewName(''); setNewRepeatEvery(null); setShowAddModal(true); }}
                                     className="bg-gradient-to-r from-brand-sky to-brand-blue text-white font-semibold px-4 py-2 rounded-xl text-sm flex items-center gap-1.5"
                                 >
                                     <Plus size={14} /> Add
@@ -498,7 +606,6 @@ function App() {
                             </div>
                         </div>
 
-                        {/* Sheet body — scrollable */}
                         <div className="overflow-y-auto px-5 pb-6">
                             {activities.length === 0 ? (
                                 <div className="text-center py-10 text-stone-400">
@@ -520,7 +627,14 @@ function App() {
                                                 >
                                                     <Sparkles size={13} />
                                                 </div>
-                                                <span className="text-stone-700 font-medium truncate">{activity.name}</span>
+                                                <div className="min-w-0">
+                                                    <span className="text-stone-700 font-medium truncate block">{activity.name}</span>
+                                                    {activity.repeatEvery && (
+                                                        <span className="text-xs text-brand-sky font-medium">
+                                                            every {activity.repeatEvery} weeks
+                                                        </span>
+                                                    )}
+                                                </div>
                                             </div>
                                             <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity ml-2 shrink-0">
                                                 <button
@@ -554,6 +668,7 @@ function App() {
                         placeholder="e.g. Clean bathroom sink" autoFocus
                         className="w-full border-2 border-stone-200 rounded-xl py-2.5 px-3 focus:outline-none focus:border-brand-blue font-medium text-stone-700 placeholder:text-stone-300 transition-colors"
                     />
+                    <RepeatPicker value={newRepeatEvery} onChange={setNewRepeatEvery} />
                     <button onClick={addActivity} disabled={!newName.trim()}
                         className="w-full bg-gradient-to-r from-brand-sky to-brand-blue text-white font-semibold py-3 rounded-xl disabled:opacity-40 hover:shadow-md transition-all">
                         Add Task
@@ -569,6 +684,7 @@ function App() {
                         onKeyDown={e => e.key === 'Enter' && saveEdit()} autoFocus
                         className="w-full border-2 border-stone-200 rounded-xl py-2.5 px-3 focus:outline-none focus:border-brand-blue font-medium text-stone-700 transition-colors"
                     />
+                    <RepeatPicker value={editRepeatEvery} onChange={setEditRepeatEvery} />
                     <button onClick={saveEdit} disabled={!editName.trim()}
                         className="w-full bg-gradient-to-r from-brand-sky to-brand-blue text-white font-semibold py-3 rounded-xl disabled:opacity-40 hover:shadow-md transition-all">
                         Save
