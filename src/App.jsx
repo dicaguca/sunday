@@ -194,41 +194,64 @@ function App() {
     };
 
     // ── Rotation logic ─────────────────────────────────────────────────────
+    // Fixed-frequency activities (repeatEvery set) never sit in `queue` — they're
+    // decided purely by isDue() and, once due, are force-included regardless of
+    // rotation order (as promised in the RepeatPicker copy). Only regular
+    // (non-fixed) activities rotate through the shuffled-bag `queue`.
     const drawFromQueue = (currentQueue, count) => {
-        // Build the eligible pool: only activities that are due this week
-        const eligible = activities.filter(isDue);
-        if (eligible.length === 0) return { picked: [], nextQueue: currentQueue };
+        const regular = activities.filter(a => !a.repeatEvery);
+        if (regular.length === 0) return { picked: [], nextQueue: currentQueue };
 
-        const eligibleIds = new Set(eligible.map(a => a.id));
+        const regularIds = new Set(regular.map(a => a.id));
 
-        // Take the existing queue, filter to eligible only, then append any
-        // eligible activities that weren't in the queue yet (shuffled).
-        let q = currentQueue.filter(id => eligibleIds.has(id));
+        // Take the existing queue, filter to regular activities only, then
+        // append any regular activities that weren't in the queue yet (shuffled).
+        let q = currentQueue.filter(id => regularIds.has(id));
         const inQ     = new Set(q);
-        const missing = shuffle(eligible.filter(a => !inQ.has(a.id)).map(a => a.id));
+        const missing = shuffle(regular.filter(a => !inQ.has(a.id)).map(a => a.id));
         q = [...q, ...missing];
 
-        const n     = Math.min(count, eligible.length);
+        const n     = Math.min(count, regular.length);
         const picked    = q.slice(0, n);
         let   remaining = q.slice(n);
 
-        // If no regular (non-fixed) activities remain in queue, refill the deck
-        // so the rotation keeps going for next week.
-        const regularRemaining = remaining.filter(id => {
-            const a = activities.find(x => x.id === id);
-            return a && !a.repeatEvery;
-        });
-        if (regularRemaining.length === 0) {
-            const regularIds = activities.filter(a => !a.repeatEvery).map(a => a.id);
-            remaining = shuffle(regularIds);
+        // When the queue empties, pre-fill the next cycle
+        if (remaining.length === 0) {
+            remaining = shuffle(regular.map(a => a.id));
         }
 
         return { picked, nextQueue: remaining };
     };
 
+    // Ids of regular activities picked in a past week but left unchecked —
+    // they haven't used their turn, so they go back into the queue as if
+    // they'd never been drawn (fixed-frequency tasks get the same treatment
+    // for free, since isDue() only advances once a task is completed).
+    const incompleteCarryoverIds = () => {
+        const ids = new Set();
+        for (const s of sessions) {
+            if (s.week === weekKey) continue;
+            for (const id of s.pickedIds) {
+                if (!s.completedIds.includes(id)) ids.add(id);
+            }
+        }
+        return ids;
+    };
+
     const pickThisWeek = (count) => {
-        const { picked, nextQueue } = drawFromQueue(queue, count);
-        const session = { week: weekKey, count, pickedIds: picked, completedIds: [] };
+        // Fixed-frequency tasks that are due always get in, guaranteed —
+        // even if that means going over `count` for the week.
+        const dueFixedIds = activities.filter(a => a.repeatEvery && isDue(a)).map(a => a.id);
+
+        const regularIds = new Set(activities.filter(a => !a.repeatEvery).map(a => a.id));
+        const reclaimed  = [...incompleteCarryoverIds()].filter(id => regularIds.has(id) && !queue.includes(id));
+        const queueWithReclaimed = [...reclaimed, ...queue];
+
+        const remainingSlots = Math.max(0, count - dueFixedIds.length);
+        const { picked: regularPicked, nextQueue } = drawFromQueue(queueWithReclaimed, remainingSlots);
+
+        const pickedIds = [...dueFixedIds, ...regularPicked];
+        const session = { week: weekKey, count, pickedIds, completedIds: [] };
         setSessions(prev => [...prev.filter(s => s.week !== weekKey), session]);
         setQueue(nextQueue);
     };
@@ -411,10 +434,11 @@ function App() {
 
                         {/* Task cards */}
                         <div className="space-y-2">
-                            {thisSession.pickedIds.map((id) => {
+                            {(() => { const carryoverIds = incompleteCarryoverIds(); return thisSession.pickedIds.map((id) => {
                                 const activity = activities.find(a => a.id === id);
                                 const done     = thisSession.completedIds.includes(id);
                                 const name     = activity?.name ?? '(removed)';
+                                const carriedOver = !done && carryoverIds.has(id);
                                 return (
                                     <button
                                         key={id}
@@ -444,7 +468,11 @@ function App() {
                                             }`}>
                                                 {name}
                                             </span>
-                                            {activity?.repeatEvery && (
+                                            {carriedOver ? (
+                                                <span className="flex items-center gap-1 text-xs text-brand-orange mt-0.5">
+                                                    <RefreshCw size={10} /> still pending from before
+                                                </span>
+                                            ) : activity?.repeatEvery && (
                                                 <span className="text-xs text-brand-sky mt-0.5 block">
                                                     every {activity.repeatEvery}w
                                                 </span>
@@ -455,7 +483,7 @@ function App() {
                                         )}
                                     </button>
                                 );
-                            })}
+                            }); })()}
                         </div>
 
                         {/* Re-pick */}
