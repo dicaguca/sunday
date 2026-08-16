@@ -124,9 +124,15 @@ function App() {
     const cloudLoadedRef = useRef(false);
     const cloudTimerRef  = useRef(null);
 
+    // Timestamp of the data currently held locally, so a stale cloud copy
+    // (e.g. a save that never landed before the tab closed) can't clobber
+    // newer local edits when the app reloads.
+    const dataUpdatedAtRef = useRef(localStorage.getItem('sunday-updatedAt'));
+    const skipNextBumpRef  = useRef(true); // first persistence run is just the initial load, not a change
+
     const getPayload = () => ({ activities, queue, sessions, updatedAt: new Date().toISOString() });
 
-    const saveToCloud = async ({ manual = false } = {}) => {
+    const saveToCloud = async ({ manual = false, keepalive = false } = {}) => {
         try {
             if (manual) setIsSyncing(true);
             setSyncStatus('Saving…');
@@ -134,6 +140,7 @@ function App() {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(getPayload()),
+                keepalive,
             });
             if (!res.ok) throw new Error();
             setSyncStatus('Saved ✓');
@@ -153,9 +160,19 @@ function App() {
             if (!res.ok) throw new Error();
             const data = await res.json();
             if (data) {
-                if (Array.isArray(data.activities)) setActivities(data.activities);
-                if (Array.isArray(data.queue))      setQueue(data.queue);
-                if (Array.isArray(data.sessions))   setSessions(data.sessions);
+                const cloudTime = data.updatedAt ? new Date(data.updatedAt).getTime() : 0;
+                const localTime = dataUpdatedAtRef.current ? new Date(dataUpdatedAtRef.current).getTime() : 0;
+                if (cloudTime > localTime) {
+                    skipNextBumpRef.current = true;
+                    dataUpdatedAtRef.current = data.updatedAt;
+                    localStorage.setItem('sunday-updatedAt', data.updatedAt);
+                    if (Array.isArray(data.activities)) setActivities(data.activities);
+                    if (Array.isArray(data.queue))      setQueue(data.queue);
+                    if (Array.isArray(data.sessions))   setSessions(data.sessions);
+                } else if (localTime > cloudTime) {
+                    // Local is ahead of the cloud — an earlier save likely never landed. Push it up now.
+                    saveToCloud();
+                }
             }
             setSyncStatus('');
         } catch {
@@ -174,9 +191,36 @@ function App() {
         return () => clearTimeout(cloudTimerRef.current);
     }, [activities, queue, sessions]);
 
-    useEffect(() => localStorage.setItem('sunday-activities', JSON.stringify(activities)), [activities]);
-    useEffect(() => localStorage.setItem('sunday-queue',      JSON.stringify(queue)),      [queue]);
-    useEffect(() => localStorage.setItem('sunday-sessions',   JSON.stringify(sessions)),   [sessions]);
+    // Flush a pending debounced save immediately if the tab is hidden/closed,
+    // so a quick "mark done → close app" doesn't leave the cloud copy stale.
+    useEffect(() => {
+        const flush = () => {
+            if (cloudTimerRef.current) {
+                clearTimeout(cloudTimerRef.current);
+                cloudTimerRef.current = null;
+                saveToCloud({ keepalive: true });
+            }
+        };
+        const onVisibilityChange = () => { if (document.visibilityState === 'hidden') flush(); };
+        document.addEventListener('visibilitychange', onVisibilityChange);
+        window.addEventListener('pagehide', flush);
+        return () => {
+            document.removeEventListener('visibilitychange', onVisibilityChange);
+            window.removeEventListener('pagehide', flush);
+        };
+    }, []);
+
+    useEffect(() => {
+        localStorage.setItem('sunday-activities', JSON.stringify(activities));
+        localStorage.setItem('sunday-queue',      JSON.stringify(queue));
+        localStorage.setItem('sunday-sessions',   JSON.stringify(sessions));
+        if (skipNextBumpRef.current) {
+            skipNextBumpRef.current = false;
+            return;
+        }
+        dataUpdatedAtRef.current = new Date().toISOString();
+        localStorage.setItem('sunday-updatedAt', dataUpdatedAtRef.current);
+    }, [activities, queue, sessions]);
 
     // ── Due-date check ─────────────────────────────────────────────────────
     // Returns true if an activity should be included in this week's pool.
@@ -223,10 +267,11 @@ function App() {
         return { picked, nextQueue: remaining };
     };
 
-    // Ids of regular activities picked in a past week but left unchecked —
-    // they haven't used their turn, so they go back into the queue as if
-    // they'd never been drawn (fixed-frequency tasks get the same treatment
-    // for free, since isDue() only advances once a task is completed).
+    // Ids picked in a past week but left unchecked. Only used to flag
+    // fixed-schedule tasks as still pending in the UI — regular (rotating)
+    // tasks get no such flag, they just quietly rejoin the bag via
+    // drawFromQueue's own "missing" step (they're no longer in `queue` once
+    // picked, so they fall into the reshuffled pool like any other task).
     const incompleteCarryoverIds = () => {
         const ids = new Set();
         for (const s of sessions) {
@@ -243,12 +288,8 @@ function App() {
         // even if that means going over `count` for the week.
         const dueFixedIds = activities.filter(a => a.repeatEvery && isDue(a)).map(a => a.id);
 
-        const regularIds = new Set(activities.filter(a => !a.repeatEvery).map(a => a.id));
-        const reclaimed  = [...incompleteCarryoverIds()].filter(id => regularIds.has(id) && !queue.includes(id));
-        const queueWithReclaimed = [...reclaimed, ...queue];
-
         const remainingSlots = Math.max(0, count - dueFixedIds.length);
-        const { picked: regularPicked, nextQueue } = drawFromQueue(queueWithReclaimed, remainingSlots);
+        const { picked: regularPicked, nextQueue } = drawFromQueue(queue, remainingSlots);
 
         const pickedIds = [...dueFixedIds, ...regularPicked];
         const session = { week: weekKey, count, pickedIds, completedIds: [] };
@@ -438,7 +479,7 @@ function App() {
                                 const activity = activities.find(a => a.id === id);
                                 const done     = thisSession.completedIds.includes(id);
                                 const name     = activity?.name ?? '(removed)';
-                                const carriedOver = !done && carryoverIds.has(id);
+                                const carriedOver = !done && activity?.repeatEvery && carryoverIds.has(id);
                                 return (
                                     <button
                                         key={id}
