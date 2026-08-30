@@ -240,19 +240,24 @@ function App() {
     }, [activities, queue, sessions]);
 
     // ── Due-date check ─────────────────────────────────────────────────────
+    // How many weeks past its due date a fixed-frequency activity is (0 = due
+    // exactly this week, negative = not due yet, Infinity = never completed —
+    // i.e. maximally overdue). Used both to decide eligibility and, when more
+    // fixed tasks are due than fit in a week, which ones take priority.
+    const weeksOverdue = (activity) => {
+        const lastDoneSession = [...sessions]
+            .filter(s => s.completedIds?.includes(activity.id))
+            .sort((a, b) => b.week.localeCompare(a.week))[0];
+        if (!lastDoneSession) return Infinity;
+        const weeksAgo = weekKeyToNum(weekKey) - weekKeyToNum(lastDoneSession.week);
+        return weeksAgo - activity.repeatEvery;
+    };
+
     // Returns true if an activity should be included in this week's pool.
     // Activities without repeatEvery are always due (regular rotation).
     // Activities with repeatEvery: N are due when at least N weeks have passed
     // since the last week they were completed.
-    const isDue = (activity) => {
-        if (!activity.repeatEvery) return true;
-        const lastDoneSession = [...sessions]
-            .filter(s => s.completedIds?.includes(activity.id))
-            .sort((a, b) => b.week.localeCompare(a.week))[0];
-        if (!lastDoneSession) return true; // never done → always eligible
-        const weeksAgo = weekKeyToNum(weekKey) - weekKeyToNum(lastDoneSession.week);
-        return weeksAgo >= activity.repeatEvery;
-    };
+    const isDue = (activity) => !activity.repeatEvery || weeksOverdue(activity) >= 0;
 
     // ── Rotation logic ─────────────────────────────────────────────────────
     // Fixed-frequency activities (repeatEvery set) never sit in `queue` — they're
@@ -301,9 +306,23 @@ function App() {
     };
 
     const pickThisWeek = (count) => {
-        // Fixed-frequency tasks that are due always get in, guaranteed —
-        // even if that means going over `count` for the week.
-        const dueFixedIds = activities.filter(a => a.repeatEvery && isDue(a)).map(a => a.id);
+        // Fixed-frequency tasks that are due compete for this week's slots too,
+        // capped at `count` overall (most-overdue first). Without this cap, a
+        // batch of tasks added together all become "due" together, flood a
+        // single week, and — once completed together — stay permanently
+        // synced onto that same recurring week. Capping staggers them: the
+        // ones bumped this week stay due and get priority next time, so their
+        // completion dates (and future due dates) naturally spread out.
+        const dueFixedIds = shuffle(activities.filter(a => a.repeatEvery && isDue(a)))
+            .sort((a, b) => {
+                const oa = weeksOverdue(a), ob = weeksOverdue(b);
+                if (oa === ob) return 0;
+                if (oa === Infinity) return -1;
+                if (ob === Infinity) return 1;
+                return ob - oa;
+            })
+            .slice(0, count)
+            .map(a => a.id);
 
         const remainingSlots = Math.max(0, count - dueFixedIds.length);
         const { picked: regularPicked, nextQueue } = drawFromQueue(queue, remainingSlots);
