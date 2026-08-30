@@ -132,14 +132,25 @@ function App() {
 
     const getPayload = () => ({ activities, queue, sessions, updatedAt: new Date().toISOString() });
 
+    // There's no UI path that legitimately empties `sessions` (history is never
+    // cleared), so all-three-empty is a reliable signal of a wiped/fresh local
+    // state rather than a real edit — never let that silently overwrite a real
+    // backup, in either direction.
+    const isBlank = (payload) =>
+        (payload.activities?.length ?? 0) === 0 &&
+        (payload.queue?.length ?? 0)      === 0 &&
+        (payload.sessions?.length ?? 0)   === 0;
+
     const saveToCloud = async ({ manual = false, keepalive = false } = {}) => {
+        const payload = getPayload();
+        if (isBlank(payload) && !manual) return;
         try {
             if (manual) setIsSyncing(true);
             setSyncStatus('Saving…');
             const res = await fetch(CLOUD_SYNC_URL, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(getPayload()),
+                body: JSON.stringify(payload),
                 keepalive,
             });
             if (!res.ok) throw new Error();
@@ -160,16 +171,22 @@ function App() {
             if (!res.ok) throw new Error();
             const data = await res.json();
             if (data) {
-                const cloudTime = data.updatedAt ? new Date(data.updatedAt).getTime() : 0;
-                const localTime = dataUpdatedAtRef.current ? new Date(dataUpdatedAtRef.current).getTime() : 0;
-                if (cloudTime > localTime) {
+                const cloudTime  = data.updatedAt ? new Date(data.updatedAt).getTime() : 0;
+                const localTime  = dataUpdatedAtRef.current ? new Date(dataUpdatedAtRef.current).getTime() : 0;
+                const cloudBlank = isBlank(data);
+                const localBlank = isBlank({ activities, queue, sessions });
+                if (cloudBlank && !localBlank) {
+                    // Cloud looks wiped/reset while this device still has real data —
+                    // don't clobber it, repair the cloud from local instead.
+                    saveToCloud();
+                } else if (!cloudBlank && cloudTime > localTime) {
                     skipNextBumpRef.current = true;
                     dataUpdatedAtRef.current = data.updatedAt;
                     localStorage.setItem('sunday-updatedAt', data.updatedAt);
                     if (Array.isArray(data.activities)) setActivities(data.activities);
                     if (Array.isArray(data.queue))      setQueue(data.queue);
                     if (Array.isArray(data.sessions))   setSessions(data.sessions);
-                } else if (localTime > cloudTime) {
+                } else if (localTime > cloudTime && !localBlank) {
                     // Local is ahead of the cloud — an earlier save likely never landed. Push it up now.
                     saveToCloud();
                 }
