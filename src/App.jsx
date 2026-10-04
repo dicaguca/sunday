@@ -55,6 +55,24 @@ const weekKeyToNum = (wk) => {
     return parseInt(y) * 52 + parseInt(w);
 };
 
+// Session history is an append-only log keyed by week, so two divergent
+// copies (e.g. a long-forgotten tab reconnecting with an outdated save) can
+// always be safely merged rather than one fully replacing the other — the
+// union of picks/completions never loses anything either side recorded.
+const mergeSessions = (a, b) => {
+    const byWeek = new Map();
+    for (const s of [...a, ...b]) {
+        const prev = byWeek.get(s.week);
+        byWeek.set(s.week, prev ? {
+            week: s.week,
+            count: Math.max(prev.count, s.count),
+            pickedIds: [...new Set([...prev.pickedIds, ...s.pickedIds])],
+            completedIds: [...new Set([...prev.completedIds, ...s.completedIds])],
+        } : s);
+    }
+    return [...byWeek.values()].sort((x, y) => x.week.localeCompare(y.week));
+};
+
 // ─── Repeat picker sub-component ─────────────────────────────────────────────
 
 const RepeatPicker = ({ value, onChange }) => (
@@ -175,19 +193,32 @@ function App() {
                 const localTime  = dataUpdatedAtRef.current ? new Date(dataUpdatedAtRef.current).getTime() : 0;
                 const cloudBlank = isBlank(data);
                 const localBlank = isBlank({ activities, queue, sessions });
+
+                // History always merges, regardless of which side looks "newer" —
+                // a stale save can add missing weeks but can never erase ones the
+                // other side already has.
+                const merged = mergeSessions(sessions, Array.isArray(data.sessions) ? data.sessions : []);
+                const sessionsChanged = JSON.stringify(merged) !== JSON.stringify(sessions);
+                if (sessionsChanged) setSessions(merged);
+
                 if (cloudBlank && !localBlank) {
                     // Cloud looks wiped/reset while this device still has real data —
                     // don't clobber it, repair the cloud from local instead.
                     saveToCloud();
                 } else if (!cloudBlank && cloudTime > localTime) {
-                    skipNextBumpRef.current = true;
-                    dataUpdatedAtRef.current = data.updatedAt;
-                    localStorage.setItem('sunday-updatedAt', data.updatedAt);
+                    // Only safe to treat this as "unchanged, just adopted cloud's
+                    // timestamp as-is" when the merge didn't add anything of its own —
+                    // otherwise this state now holds more than the cloud knows about,
+                    // and needs its own fresh timestamp so it doesn't look stale later.
+                    if (!sessionsChanged) {
+                        skipNextBumpRef.current = true;
+                        dataUpdatedAtRef.current = data.updatedAt;
+                        localStorage.setItem('sunday-updatedAt', data.updatedAt);
+                    }
                     if (Array.isArray(data.activities)) setActivities(data.activities);
                     if (Array.isArray(data.queue))      setQueue(data.queue);
-                    if (Array.isArray(data.sessions))   setSessions(data.sessions);
-                } else if (localTime > cloudTime && !localBlank) {
-                    // Local is ahead of the cloud — an earlier save likely never landed. Push it up now.
+                } else if ((localTime > cloudTime && !localBlank) || sessionsChanged) {
+                    // Local (now possibly merged) is ahead of the cloud — push it up.
                     saveToCloud();
                 }
             }
